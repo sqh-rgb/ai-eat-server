@@ -6,7 +6,6 @@ const { generateReasons } = require('../services/reasonEngine');
 const { get: cacheGet, set: cacheSet, makeKey } = require('../services/cacheService');
 
 const router = Router();
-
 router.use(authMiddleware);
 router.use(rateLimiter);
 
@@ -14,30 +13,41 @@ router.post('/recommend', async (req, res) => {
   try {
     const { lat, lng, budget = 30, radius = 1000, taste = 'any', people = 1 } = req.body;
     if (!lat || !lng) return res.status(400).json({ error: { code: 'BAD_REQUEST', message: '缺少经纬度参数' } });
-    const cacheKey = makeKey(lat, lng, budget, radius, taste);
+
+    // 人均预算
+    const perPerson = people > 0 ? Math.round(budget / people) : budget;
+
+    const cacheKey = makeKey(lat, lng, perPerson, radius, taste);
     const cached = cacheGet(cacheKey);
     if (cached) return res.json({ results: cached, cached: true });
-    let candidates = [], searchRadius = radius, attempts = 0;
+
+    // 扩大搜索：一次搜 50 家
+    let candidates = [], sr = radius, attempts = 0;
     while (attempts < 4) {
-      candidates = await searchNearby(lat, lng, searchRadius);
-      if (candidates.length >= 5) break;
-      searchRadius = Math.min(searchRadius * 1.5, 5000); attempts++;
+      candidates = await searchNearby(lat, lng, sr, 50);
+      if (candidates.length >= 10) break;
+      sr = Math.min(sr * 1.5, 5000); attempts++;
     }
+
     if (candidates.length === 0) return res.json({ results: [], cached: false, notice: '附近暂无符合条件的餐厅' });
-    const scored = scoreAll(candidates, { budget, taste });
-    let ranked = rankAndFilter(scored, { topN: 5, minScore: 2 });
-    if (ranked.length < 3) {
-      const relaxed = scoreAll(candidates, { budget, taste: 'any' });
-      ranked = rankAndFilter(relaxed, { topN: 5, minScore: 1 });
+
+    // 用人均预算评分
+    const scored = scoreAll(candidates, { budget: perPerson, taste });
+    let ranked = rankAndFilter(scored, { topN: 10, minScore: 2 });
+
+    if (ranked.length < 5) {
+      const relaxed = scoreAll(candidates, { budget: perPerson, taste: 'any' });
+      ranked = rankAndFilter(relaxed, { topN: 10, minScore: 1 });
     }
+
     if (ranked.length === 0) {
-      ranked = candidates.sort((a, b) => a.distance - b.distance).slice(0, 3)
-        .map(r => ({ ...r, score: 1, dimensions: { D: 1, P: 1, T: 5, R: 3, E: 0 } }));
+      ranked = candidates.sort((a, b) => (b.rating || 3) - (a.rating || 3)).slice(0, 5)
+        .map(r => ({ ...r, score: 1, dimensions: { D: 1, P: 1, T: 5, R: (r.rating || 3) * 2, E: 0 } }));
     }
-    const withReasons = generateReasons(ranked, { budget });
+
+    const withReasons = generateReasons(ranked, { budget: perPerson });
     cacheSet(cacheKey, withReasons);
-    res.json({ results: withReasons, cached: false, total: candidates.length,
-      notice: ranked.length < 3 ? '附近符合条件的餐厅不多' : undefined });
+    res.json({ results: withReasons, cached: false, total: candidates.length });
   } catch (err) {
     res.status(500).json({ error: { code: 'INTERNAL_ERROR' } });
   }
@@ -50,9 +60,7 @@ router.get('/geocode', async (req, res) => {
     const result = await geocode(address);
     if (!result) return res.json({ error: '未找到该地址' });
     res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: '地址查询失败' });
-  }
+  } catch (err) { res.status(500).json({ error: '地址查询失败' }); }
 });
 
 router.get('/restaurant/:id', (req, res) => res.json({ message: '详情查询接口' }));
