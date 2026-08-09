@@ -6,7 +6,7 @@ function mapCuisine(typeTag) {
   return match ? match[1] : '其他';
 }
 
-async function searchNearby(lat, lng, radius = 3000, offset = 25) {
+async function searchNearby(lat, lng, radius = 3000, offset = 50) {
   const url = `${BASE}/place/around?key=${AMAP_KEY}&location=${lng},${lat}&radius=${radius}&types=050000&offset=${offset}&page=1`;
   const res = await fetch(url);
   const data = await res.json();
