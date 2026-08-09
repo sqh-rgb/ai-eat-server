@@ -6,7 +6,7 @@ const CUISINE_SPICY = {
 };
 
 function scoreDistance(d) {
-  if (d<=500) return 10; if (d<=1000) return 8; if (d<=2000) return 5; if (d<=3000) return 3; return 1;
+  if (d<=500) return 10; if (d<=1000) return 9; if (d<=2000) return 7; if (d<=3000) return 5; return 2;
 }
 
 function scoreBudget(cost, budget) {
@@ -42,16 +42,17 @@ function scorePersonal(cuisine, prefs) {
   return prefs.some(c=>CUISINE_SPICY[c]&&CUISINE_SPICY[c]===lev) ? 5 : 0;
 }
 
+// 新权重体系：距离15%、预算30%、口味15%、评分30%、个性化10%
 function scoreAll(restaurants, { budget, taste, userRatingMap, userPrefCuisines }) {
   const ur = userRatingMap||{}, pc = userPrefCuisines||[];
   return restaurants.map(r => {
     const D=scoreDistance(r.distance), P=scoreBudget(r.avg_cost,budget), T=scoreTaste(r.cuisine,taste), R=scoreRating(r.rating,ur[r.id]), E=scorePersonal(r.cuisine,pc);
-    return { ...r, score: Math.round((0.25*D+0.30*P+0.20*T+0.15*R+0.10*E)*10)/10, dimensions:{D,P,T,R,E} };
+    return { ...r, score: Math.round((0.15*D+0.30*P+0.15*T+0.30*R+0.10*E)*10)/10, dimensions:{D,P,T,R,E} };
   });
 }
 
 function rankAndFilter(scored, opts={}) {
-  const { topN=5, minScore=1 } = opts;
+  const { topN=15, minScore=1 } = opts;
   const ok = scored.filter(s=>s.score>=minScore);
   return ok.sort((a,b)=>(b.score+Math.random()*0.05)-(a.score+Math.random()*0.05)).slice(0,topN);
 }
