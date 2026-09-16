@@ -204,6 +204,95 @@ test('确认上传的最终状态更新会拒绝下载期间刚过期的意图',
   } finally { await pool.end(); }
 });
 
+test('格式不匹配会先提交 rejected 再调用服务角色清理', async () => {
+  const { pool, database } = await memoryDatabase();
+  let removals = 0;
+  try {
+    await pool.query(`INSERT INTO user_upload_intents(
+      id,user_id,user_subject_hash,storage_key,media_kind,expected_mime_type,expected_byte_size,status,expires_at
+    ) VALUES('intent-mismatch-order','user-1','subject-1','user-1/intent-mismatch-order.png','review_photo','image/png',8,'issued',NOW()+INTERVAL '1 hour')`);
+    const uploads = createStorageUploads({
+      database,
+      getUserClient: () => ({ storage: { from: () => ({
+        async download() { return { data: { async arrayBuffer() { return Uint8Array.from([1, 2, 3, 4]).buffer; } }, error: null }; },
+      }) } }),
+      getServiceClient: () => ({ storage: { from: () => ({
+        async remove() {
+          const row = (await pool.query("SELECT status,actual_mime_type,actual_byte_size FROM user_upload_intents WHERE id='intent-mismatch-order'")).rows[0];
+          assert.deepEqual(row, { status: 'rejected', actual_mime_type: null, actual_byte_size: 4 });
+          removals += 1;
+          return { error: null };
+        },
+      }) } }),
+    });
+    await assert.rejects(uploads.confirmUpload({
+      userId: 'user-1', accessToken: 'token', intentId: 'intent-mismatch-order',
+    }), error => error.code === 'UPLOAD_MISMATCH' && error.status === 400);
+    assert.equal(removals, 1);
+  } finally { await pool.end(); }
+});
+
+test('格式不匹配的拒绝更新不能覆盖并发 deleted 状态', async () => {
+  const { pool, database } = await memoryDatabase();
+  let removals = 0;
+  try {
+    await pool.query(`INSERT INTO user_upload_intents(
+      id,user_id,user_subject_hash,storage_key,media_kind,expected_mime_type,expected_byte_size,status,expires_at
+    ) VALUES('intent-mismatch-race','user-1','subject-1','user-1/intent-mismatch-race.png','review_photo','image/png',8,'issued',NOW()+INTERVAL '1 hour')`);
+    const uploads = createStorageUploads({
+      database,
+      getUserClient: () => ({ storage: { from: () => ({
+        async download() {
+          return { data: { async arrayBuffer() {
+            await pool.query("UPDATE user_upload_intents SET status='deleted' WHERE id='intent-mismatch-race'");
+            return Uint8Array.from([1, 2, 3, 4]).buffer;
+          } }, error: null };
+        },
+      }) } }),
+      getServiceClient: () => ({ storage: { from: () => ({
+        async remove() { removals += 1; return { error: null }; },
+      }) } }),
+    });
+    await assert.rejects(uploads.confirmUpload({
+      userId: 'user-1', accessToken: 'token', intentId: 'intent-mismatch-race',
+    }), error => error.code === 'UPLOAD_DELETED' && error.status === 409);
+    assert.equal((await pool.query("SELECT status FROM user_upload_intents WHERE id='intent-mismatch-race'")).rows[0].status, 'deleted');
+    assert.equal(removals, 0);
+  } finally { await pool.end(); }
+});
+
+test('格式不匹配清理失败后保持 rejected 并可经 DELETE 重试', async () => {
+  const { pool, database } = await memoryDatabase();
+  let removals = 0;
+  try {
+    await pool.query(`INSERT INTO user_upload_intents(
+      id,user_id,user_subject_hash,storage_key,media_kind,expected_mime_type,expected_byte_size,status,expires_at
+    ) VALUES('intent-mismatch-retry','user-1','subject-1','user-1/intent-mismatch-retry.png','review_photo','image/png',8,'issued',NOW()+INTERVAL '1 hour')`);
+    const uploads = createStorageUploads({
+      database,
+      getUserClient: () => ({ storage: { from: () => ({
+        async download() { return { data: { async arrayBuffer() { return Uint8Array.from([1, 2, 3, 4]).buffer; } }, error: null }; },
+      }) } }),
+      getServiceClient: () => ({ storage: { from: () => ({
+        async remove() {
+          removals += 1;
+          return { error: removals === 1 ? new Error('temporary storage failure') : null };
+        },
+      }) } }),
+    });
+    await assert.rejects(uploads.confirmUpload({
+      userId: 'user-1', accessToken: 'token', intentId: 'intent-mismatch-retry',
+    }), error => error.code === 'STORAGE_UNAVAILABLE' && error.status === 502);
+    assert.equal((await pool.query("SELECT status FROM user_upload_intents WHERE id='intent-mismatch-retry'")).rows[0].status, 'rejected');
+    await assert.rejects(uploads.confirmUpload({
+      userId: 'user-1', accessToken: 'token', intentId: 'intent-mismatch-retry',
+    }), error => error.code === 'UPLOAD_REJECTED' && error.status === 409);
+    await uploads.deleteUpload({ userId: 'user-1', intentId: 'intent-mismatch-retry' });
+    assert.equal(removals, 2);
+    assert.equal((await pool.query("SELECT status FROM user_upload_intents WHERE id='intent-mismatch-retry'")).rows[0].status, 'deleted');
+  } finally { await pool.end(); }
+});
+
 async function withServer(router, work) {
   const app = express();
   app.use(express.json());

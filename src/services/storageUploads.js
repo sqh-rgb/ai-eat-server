@@ -102,12 +102,29 @@ function createStorageUploads({
     await removeFromServiceStorage(storage, storageKey);
   }
 
+  function confirmationStateError(intent) {
+    if (intent.status === 'rejected') {
+      return serviceError('上传文件已经被拒绝，请删除后重新申请', 'UPLOAD_REJECTED', 409);
+    }
+    if (intent.status === 'deleted') {
+      return serviceError('上传任务已经删除', 'UPLOAD_DELETED', 409);
+    }
+    if (intent.status === 'expired' ||
+        (intent.status === 'issued' && new Date(intent.expires_at) <= clock())) {
+      return serviceError('上传地址已经过期，请重新申请', 'UPLOAD_EXPIRED', 409);
+    }
+    return serviceError('上传任务状态已经变化，请重新检查', 'UPLOAD_CONFIRM_CONFLICT', 409);
+  }
+
   async function confirmUpload({ userId, accessToken, intentId }) {
     const intent = await ownedIntent(database, userId, intentId);
     if (intent.status === 'uploaded' || intent.status === 'attached') return intent;
     if (intent.status !== 'issued' || new Date(intent.expires_at) <= clock()) {
-      await database.query("UPDATE user_upload_intents SET status='expired',updated_at=NOW() WHERE id=$1 AND status='issued'", [intentId]);
-      throw serviceError('上传地址已经过期，请重新申请', 'UPLOAD_EXPIRED', 409);
+      await database.query(
+        "UPDATE user_upload_intents SET status='expired',updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='issued' AND expires_at<=NOW()",
+        [intentId, userId],
+      );
+      throw confirmationStateError(intent);
     }
     const storage = getUserClient(accessToken).storage.from(BUCKET);
     const { data, error: downloadError } = await storage.download(intent.storage_key);
@@ -116,11 +133,17 @@ function createStorageUploads({
     const detectedMime = detectImageMime(bytes);
     const expectedBytes = Number(intent.expected_byte_size);
     if (!detectedMime || detectedMime !== intent.expected_mime_type || bytes.length !== expectedBytes) {
-      await removeWithService(intent.storage_key);
-      await database.query(
-        "UPDATE user_upload_intents SET status='rejected',actual_mime_type=$2,actual_byte_size=$3,updated_at=NOW() WHERE id=$1",
-        [intentId, detectedMime, bytes.length],
+      const rejected = await database.query(
+        `UPDATE user_upload_intents
+         SET status='rejected',actual_mime_type=$2,actual_byte_size=$3,updated_at=NOW()
+         WHERE id=$1 AND user_id=$4 AND status='issued' AND expires_at>NOW()
+         RETURNING *`,
+        [intentId, detectedMime, bytes.length, userId],
       );
+      if (!rejected.rows[0]) {
+        throw confirmationStateError(await ownedIntent(database, userId, intentId));
+      }
+      await removeWithService(intent.storage_key);
       throw serviceError('图片实际格式或大小与申请信息不一致，文件已拒绝', 'UPLOAD_MISMATCH', 400);
     }
     const result = await database.query(
@@ -132,15 +155,13 @@ function createStorageUploads({
     );
     if (result.rows[0]) return result.rows[0];
     const current = await ownedIntent(database, userId, intentId);
-    if (current.status === 'expired' ||
-        (current.status === 'issued' && new Date(current.expires_at) <= clock())) {
+    if (current.status === 'expired' || (current.status === 'issued' && new Date(current.expires_at) <= clock())) {
       await database.query(
         "UPDATE user_upload_intents SET status='expired',updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='issued' AND expires_at<=NOW()",
         [intentId, userId],
       );
-      throw serviceError('上传地址已经过期，请重新申请', 'UPLOAD_EXPIRED', 409);
     }
-    throw serviceError('上传任务状态已经变化，请重新检查', 'UPLOAD_CONFIRM_CONFLICT', 409);
+    throw confirmationStateError(current);
   }
 
   async function createPreviewUrl({ userId, accessToken, intentId, allowAdmin = false }) {
