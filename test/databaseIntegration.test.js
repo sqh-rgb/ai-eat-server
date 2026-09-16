@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { newDb, DataType } = require('pg-mem');
@@ -133,6 +134,45 @@ test('候选同步不会覆盖已批准目录数据，但会刷新来源记录',
     assert.equal(afterDishSource.rows.length, 1);
     assert.notEqual(afterBranchSource, beforeBranchSource);
     assert.notEqual(afterDishSource.rows[0].normalized_hash, beforeDishSource);
+  } finally {
+    client.release();
+    await pool.end();
+  }
+});
+
+test('升级后兼容旧版菜品来源键并更新同一来源记录', async () => {
+  const { pool, client } = await memoryClient();
+  try {
+    const branchId = 'legacy-dish-branch-1';
+    const dishId = 'legacy-dish-1';
+    const legacyName = '旧版菜品';
+    const name = '升级后菜品';
+    const legacyExternalId = `${branchId}:${legacyName}`;
+    const legacySourceRecordId = `manual:dish:${crypto.createHash('sha256').update(legacyExternalId).digest('hex')}`;
+    await importBranches(client, prepareBranches([{
+      branchId, sourceId: 'manual', name: '兼容测试分店', address: '测试地址',
+    }]));
+    await client.query(
+      `INSERT INTO source_records(id,source_id,external_id,entity_type,evidence_url,normalized_hash,raw_payload,review_status)
+       VALUES($1,'manual',$2,'dish','https://example.com/legacy','legacy-hash',$3::jsonb,'approved')`,
+      [legacySourceRecordId, legacyExternalId, JSON.stringify({ branchId, name: legacyName, price: 12 })],
+    );
+    await client.query(
+      "INSERT INTO dishes(id,branch_id,name,review_status) VALUES($1,$2,$3,'candidate')",
+      [dishId, branchId, legacyName],
+    );
+
+    assert.deepEqual(await importDishes(client, prepareDishes([{
+      id: dishId, branchId, sourceId: 'manual', name, price: 18,
+    }])), { total: 1, inserted: 0, updated: 1 });
+    const sourceRecords = await client.query(
+      "SELECT id,external_id,normalized_hash,review_status FROM source_records WHERE source_id='manual' AND entity_type='dish'",
+    );
+    assert.equal(sourceRecords.rows.length, 1);
+    assert.equal(sourceRecords.rows[0].id, legacySourceRecordId);
+    assert.equal(sourceRecords.rows[0].external_id, dishId);
+    assert.notEqual(sourceRecords.rows[0].normalized_hash, 'legacy-hash');
+    assert.equal(sourceRecords.rows[0].review_status, 'approved');
   } finally {
     client.release();
     await pool.end();

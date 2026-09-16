@@ -56,18 +56,31 @@ async function importDishes(client, records) {
   for (const record of records) {
     const externalId = record.id;
     const sourceRecordId = `${record.sourceId}:dish:${crypto.createHash('sha256').update(externalId).digest('hex')}`;
+    const legacyExternalId = `${record.branchId}:${record.name}`;
+    const legacySourceRecordId = `${record.sourceId}:dish:${crypto.createHash('sha256').update(legacyExternalId).digest('hex')}`;
+    const existingDish = await client.query('SELECT name FROM dishes WHERE id=$1', [record.id]);
+    const previousName = existingDish.rows[0]?.name || record.name;
+    const previousLegacyExternalId = `${record.branchId}:${previousName}`;
+    const previousLegacySourceRecordId = `${record.sourceId}:dish:${crypto.createHash('sha256').update(previousLegacyExternalId).digest('hex')}`;
     const safePayload = {
       branchId: record.branchId, name: record.name, aliases: record.aliases, category: record.category,
       price: record.price, spiceLevel: record.spiceLevel, suitableSolo: record.suitableSolo,
     };
     const hash = crypto.createHash('sha256').update(JSON.stringify(safePayload)).digest('hex');
-    const existing = await client.query('SELECT normalized_hash FROM source_records WHERE id=$1', [sourceRecordId]);
+    const existing = await client.query(
+      `SELECT id,normalized_hash FROM source_records
+       WHERE source_id=$1 AND entity_type='dish' AND (external_id=$2 OR id=$3 OR id=$4)
+       ORDER BY CASE WHEN external_id=$2 THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [record.sourceId, externalId, legacySourceRecordId, previousLegacySourceRecordId],
+    );
+    const existingSourceRecordId = existing.rows[0]?.id || sourceRecordId;
     await client.query(
       `INSERT INTO source_records(id,source_id,external_id,entity_type,evidence_url,normalized_hash,raw_payload)
        VALUES($1,$2,$3,'dish',$4,$5,$6::jsonb)
-       ON CONFLICT(id) DO UPDATE SET evidence_url=EXCLUDED.evidence_url,normalized_hash=EXCLUDED.normalized_hash,
+       ON CONFLICT(id) DO UPDATE SET external_id=EXCLUDED.external_id,evidence_url=EXCLUDED.evidence_url,normalized_hash=EXCLUDED.normalized_hash,
          raw_payload=EXCLUDED.raw_payload,fetched_at=NOW()`,
-      [sourceRecordId, record.sourceId, externalId, record.evidenceUrl, hash, JSON.stringify(safePayload)],
+      [existingSourceRecordId, record.sourceId, externalId, record.evidenceUrl, hash, JSON.stringify(safePayload)],
     );
     await client.query(
       `INSERT INTO dishes(id,branch_id,name,aliases,category,price,spice_level,suitable_solo,review_status,primary_source_id)
