@@ -1,6 +1,6 @@
-const fs = require('node:fs/promises');
 const path = require('node:path');
 const { getPool, closePool } = require('../src/db/pool');
+const { runMigrations } = require('../src/db/migrationRunner');
 
 const RETRYABLE_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', '57P01', '57P02', '57P03']);
 
@@ -14,8 +14,7 @@ async function runMigration(pool, file, sql) {
   for (let attempt = 0; attempt < waits.length; attempt += 1) {
     if (waits[attempt]) await delay(waits[attempt]);
     try {
-      await pool.query(sql);
-      return;
+      return await pool.query(sql);
     } catch (error) {
       lastError = error;
       if (!RETRYABLE_CODES.has(error.code) && !/connection timeout|ECONNRESET/i.test(error.message)) throw error;
@@ -27,18 +26,25 @@ async function runMigration(pool, file, sql) {
 
 async function main() {
   const directory = path.resolve(__dirname, '..', 'db', 'migrations');
-  const files = (await fs.readdir(directory)).filter(name => name.endsWith('.sql')).sort();
   const pool = getPool();
+  const retryingClient = {
+    query(sql) {
+      return runMigration(pool, '数据库迁移', sql);
+    },
+  };
+  const files = await runMigrations(retryingClient, directory);
   for (const file of files) {
-    const sql = await fs.readFile(path.join(directory, file), 'utf8');
-    await runMigration(pool, file, sql);
     console.log(`已执行迁移：${file}`);
   }
 }
 
-main()
-  .catch(error => {
-    console.error(error.message);
-    process.exitCode = 1;
-  })
-  .finally(closePool);
+if (require.main === module) {
+  main()
+    .catch(error => {
+      console.error(error.message);
+      process.exitCode = 1;
+    })
+    .finally(closePool);
+}
+
+module.exports = { main, runMigration };
