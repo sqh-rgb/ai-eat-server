@@ -39,9 +39,6 @@ CREATE INDEX IF NOT EXISTS idx_upload_intents_expiry
 CREATE UNIQUE INDEX IF NOT EXISTS idx_submission_media_upload_intent
   ON user_submission_media(upload_intent_id) WHERE upload_intent_id IS NOT NULL;
 
-ALTER TABLE app_admins ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_upload_intents ENABLE ROW LEVEL SECURITY;
-
 INSERT INTO schema_migrations(version) VALUES ('012_upload_intents_and_admins')
 ON CONFLICT (version) DO NOTHING;
 

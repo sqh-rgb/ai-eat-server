@@ -1,5 +1,8 @@
 BEGIN;
 
+ALTER TABLE app_admins ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_upload_intents ENABLE ROW LEVEL SECURITY;
+
 INSERT INTO storage.buckets(id,name,public,file_size_limit,allowed_mime_types)
 VALUES(
   'ai-eat-review-submissions','ai-eat-review-submissions',FALSE,10485760,

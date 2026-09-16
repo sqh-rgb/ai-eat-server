@@ -85,6 +85,22 @@ async function previewAudit(client, batch) {
   return { total: batch.records.length, matched: result.rows.length, missing, missingVenues, counts };
 }
 
+function buildAuditInput(records) {
+  const types = [
+    'text', 'text', 'text', 'boolean', 'text', 'text', 'text', 'text', 'text', 'text',
+    'smallint', 'timestamptz', 'timestamptz', 'text', 'text',
+  ];
+  const values = records.flatMap(record => [
+    record.poiId, record.decision, record.confirmedName, record.studentSuitable, record.auditNote,
+    record.entityKind, record.venueId, record.locationDetail, record.existenceStatus,
+    record.verificationMethod, record.verificationConfidence, record.verifiedAt, record.reverifyAfter,
+    record.verificationEvidenceUrl, record.verificationNote,
+  ]);
+  const rows = records.map((_, rowIndex) => `(${types.map((type, columnIndex) =>
+    `$${rowIndex * types.length + columnIndex + 1}::${type}`).join(',')})`).join(',');
+  return { values, rows };
+}
+
 async function importAudit(client, batch) {
   const prior = await client.query('SELECT id,status,imported_count FROM branch_audit_batches WHERE content_sha256=$1', [batch.sha256]);
   if (prior.rows[0]) return { ...prior.rows[0], alreadyImported: true };
@@ -92,28 +108,17 @@ async function importAudit(client, batch) {
   if (preview.missing.length) throw new Error(`存在数据库中找不到的 POI：${preview.missing.slice(0, 20).join(', ')}`);
   if (preview.missingVenues.length) throw new Error(`存在数据库中找不到的所属场所：${preview.missingVenues.slice(0, 20).join(', ')}`);
 
-  const poiIds = batch.records.map(record => record.poiId);
-  const decisions = batch.records.map(record => record.decision);
-  const names = batch.records.map(record => record.confirmedName);
-  const suitable = batch.records.map(record => record.studentSuitable);
-  const notes = batch.records.map(record => record.auditNote);
-  const entityKinds = batch.records.map(record => record.entityKind);
-  const venueIds = batch.records.map(record => record.venueId);
-  const locationDetails = batch.records.map(record => record.locationDetail);
-  const existenceStatuses = batch.records.map(record => record.existenceStatus);
-  const verificationMethods = batch.records.map(record => record.verificationMethod);
-  const verificationConfidences = batch.records.map(record => record.verificationConfidence);
-  const verifiedAts = batch.records.map(record => record.verifiedAt);
-  const reverifyAfters = batch.records.map(record => record.reverifyAfter);
-  const evidenceUrls = batch.records.map(record => record.verificationEvidenceUrl);
-  const verificationNotes = batch.records.map(record => record.verificationNote);
   await client.query(
     `INSERT INTO branch_audit_batches(id,content_sha256,source_filename,note)
      VALUES($1,$2,$3,$4)`,
     [batch.batchId, batch.sha256, batch.sourceFilename, '用户确认的商家集中审核结果'],
   );
-  await client.query(
-    `INSERT INTO branch_audit_batch_items(
+  let importedCount = 0;
+  for (let offset = 0; offset < batch.records.length; offset += 1000) {
+    const auditInput = buildAuditInput(batch.records.slice(offset, offset + 1000));
+    const batchIdParameter = auditInput.values.length + 1;
+    await client.query(
+      `INSERT INTO branch_audit_batch_items(
        batch_id,branch_id,poi_id,previous_review_status,previous_name,
        previous_student_suitable,previous_student_audit_note,applied_review_status,applied_name,
        previous_entity_kind,previous_venue_id,previous_location_detail,previous_existence_status,
@@ -121,36 +126,38 @@ async function importAudit(client, batch) {
        previous_reverify_after,previous_verification_evidence_url,previous_verification_note,
        applied_existence_status
      )
-     SELECT $1,b.id,i.poi_id,b.review_status,b.name,b.student_suitable,b.student_audit_note,i.decision,i.confirmed_name,
+     SELECT $${batchIdParameter},b.id,i.poi_id,b.review_status,b.name,b.student_suitable,b.student_audit_note,i.decision,i.confirmed_name,
        b.entity_kind,b.venue_id,b.location_detail,b.existence_status,b.verification_method,
        b.verification_confidence,b.verified_at,b.reverify_after,b.verification_evidence_url,b.verification_note,
        i.existence_status
-     FROM UNNEST($2::text[],$3::text[],$4::text[],$5::boolean[],$6::text[])
-       AS i(poi_id,decision,confirmed_name,student_suitable,audit_note)
+     FROM (VALUES ${auditInput.rows}) AS i(
+       poi_id,decision,confirmed_name,student_suitable,audit_note,entity_kind,venue_id,location_detail,
+       existence_status,verification_method,verification_confidence,verified_at,reverify_after,evidence_url,
+       verification_note
+     )
      JOIN branches b ON COALESCE(NULLIF(b.amap_poi,''),b.id)=i.poi_id`,
-    [batch.batchId, poiIds, decisions, names, suitable, notes],
-  );
-  const updated = await client.query(
-    `UPDATE branches b SET
+      [...auditInput.values, batch.batchId],
+    );
+    const updated = await client.query(
+      `UPDATE branches SET
        name=i.confirmed_name,review_status=i.decision,student_suitable=i.student_suitable,
        student_audit_note=i.audit_note,student_audited_at=NOW(),entity_kind=i.entity_kind,
        venue_id=i.venue_id,location_detail=i.location_detail,existence_status=i.existence_status,
        verification_method=i.verification_method,verification_confidence=i.verification_confidence,
        verified_at=i.verified_at,reverify_after=i.reverify_after,
        verification_evidence_url=i.evidence_url,verification_note=i.verification_note,updated_at=NOW()
-     FROM UNNEST($1::text[],$2::text[],$3::text[],$4::boolean[],$5::text[],$6::text[],
-       $7::text[],$8::text[],$9::text[],$10::text[],$11::smallint[],$12::timestamptz[],
-       $13::timestamptz[],$14::text[],$15::text[])
-       AS i(poi_id,decision,confirmed_name,student_suitable,audit_note,entity_kind,venue_id,
-         location_detail,existence_status,verification_method,verification_confidence,verified_at,
-         reverify_after,evidence_url,verification_note)
-     WHERE COALESCE(NULLIF(b.amap_poi,''),b.id)=i.poi_id`,
-    [poiIds, decisions, names, suitable, notes, entityKinds, venueIds, locationDetails,
-      existenceStatuses, verificationMethods, verificationConfidences, verifiedAts,
-      reverifyAfters, evidenceUrls, verificationNotes],
-  );
-  await client.query('UPDATE branch_audit_batches SET imported_count=$2 WHERE id=$1', [batch.batchId, updated.rowCount]);
-  return { id: batch.batchId, status: 'imported', imported_count: updated.rowCount, alreadyImported: false };
+     FROM (VALUES ${auditInput.rows}) AS i(
+       poi_id,decision,confirmed_name,student_suitable,audit_note,entity_kind,venue_id,location_detail,
+       existence_status,verification_method,verification_confidence,verified_at,reverify_after,evidence_url,
+       verification_note
+     )
+     WHERE COALESCE(NULLIF(branches.amap_poi,''),branches.id)=i.poi_id`,
+      auditInput.values,
+    );
+    importedCount += updated.rowCount;
+  }
+  await client.query('UPDATE branch_audit_batches SET imported_count=$2 WHERE id=$1', [batch.batchId, importedCount]);
+  return { id: batch.batchId, status: 'imported', imported_count: importedCount, alreadyImported: false };
 }
 
 module.exports = { prepareAuditPackage, previewAudit, importAudit };

@@ -8,6 +8,7 @@ const { importLicenses, prepareLicenses } = require('../src/import/governmentLic
 const { importLeads, prepareLeads } = require('../src/import/discoveryLeads');
 const { importBranches, prepareBranches } = require('../src/import/branchCandidates');
 const { importDishes, prepareDishes } = require('../src/import/dishCandidates');
+const { prepareAuditPackage, importAudit } = require('../src/import/branchAudit');
 
 async function memoryClient() {
   const memory = newDb();
@@ -18,6 +19,10 @@ async function memoryClient() {
   memory.public.registerFunction({
     name: 'btrim', args: [DataType.text], returns: DataType.text,
     implementation: value => String(value).trim(),
+  });
+  memory.public.registerFunction({
+    name: 'nullif', args: [DataType.text, DataType.text], returns: DataType.text,
+    implementation: (value, other) => (value === other ? null : value),
   });
   const adapter = memory.adapters.createPg();
   const pool = new adapter.Pool();
@@ -68,6 +73,51 @@ test('商家和菜品先以 candidate 导入，重复导入保持幂等且不覆
     assert.deepEqual(await importDishes(client, dishes), { total: 1, inserted: 1, updated: 0 });
     assert.equal((await client.query('SELECT review_status FROM dishes')).rows[0].review_status, 'candidate');
     assert.deepEqual(await importDishes(client, []), { total: 0, inserted: 0, updated: 0 });
+  } finally {
+    client.release();
+    await pool.end();
+  }
+});
+
+test('集中审核会保存候选分店的旧值并写入完整核实结论', async () => {
+  const { pool, client } = await memoryClient();
+  try {
+    const branchId = 'audited-candidate-1';
+    await importBranches(client, prepareBranches([{
+      branchId, sourceId: 'manual', name: '审核前名称', address: '西大周边',
+    }]));
+    const batch = prepareAuditPackage(JSON.stringify({
+      sourceWorkbook: '集中审核.json',
+      records: [{
+        poiId: branchId, decision: 'approved', confirmedName: '审核后名称', studentSuitable: true,
+        auditNote: '适合学生就餐', entityKind: 'standalone_store', locationDetail: '校门口东侧',
+        existenceStatus: 'confirmed', verificationMethod: 'onsite', verificationConfidence: 95,
+        verifiedAt: '2026-09-16T08:00:00.000Z', reverifyAfter: '2027-03-16T08:00:00.000Z',
+        verificationEvidenceUrl: 'https://example.com/evidence', verificationNote: '现场核实营业中',
+      }],
+    }));
+
+    assert.deepEqual(await importAudit(client, batch), {
+      id: batch.batchId, status: 'imported', imported_count: 1, alreadyImported: false,
+    });
+    assert.deepEqual((await client.query(
+      'SELECT name,review_status,student_suitable,existence_status,verification_method,verification_confidence,verification_note FROM branches WHERE id=$1',
+      [branchId],
+    )).rows[0], {
+      name: '审核后名称', review_status: 'approved', student_suitable: true,
+      existence_status: 'confirmed', verification_method: 'onsite', verification_confidence: 95,
+      verification_note: '现场核实营业中',
+    });
+    assert.deepEqual((await client.query(
+      `SELECT previous_review_status,previous_name,previous_entity_kind,previous_existence_status,
+              previous_verification_method,previous_verification_confidence
+       FROM branch_audit_batch_items WHERE batch_id=$1 AND branch_id=$2`,
+      [batch.batchId, branchId],
+    )).rows[0], {
+      previous_review_status: 'candidate', previous_name: '审核前名称', previous_entity_kind: 'unknown',
+      previous_existence_status: 'unverified', previous_verification_method: 'none',
+      previous_verification_confidence: 0,
+    });
   } finally {
     client.release();
     await pool.end();
