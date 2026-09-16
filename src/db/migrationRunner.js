@@ -15,7 +15,9 @@ async function listPendingMigrations(client, files) {
   try {
     result = await client.query('SELECT version FROM schema_migrations');
   } catch (error) {
-    if (missingMigrationTable(error)) return sortedFiles;
+    if (missingMigrationTable(error)) {
+      return sortedFiles.filter(file => migrationVersion(file) === '001_core');
+    }
     throw error;
   }
 
@@ -25,14 +27,20 @@ async function listPendingMigrations(client, files) {
 
 async function runMigrations(client, directory) {
   const files = (await fs.readdir(directory)).filter(name => name.endsWith('.sql')).sort();
-  const pendingFiles = await listPendingMigrations(client, files);
+  const appliedFiles = [];
 
-  for (const file of pendingFiles) {
-    const sql = await fs.readFile(path.join(directory, file), 'utf8');
-    await client.query(sql);
+  async function apply(filesToApply) {
+    for (const file of filesToApply) {
+      const sql = await fs.readFile(path.join(directory, file), 'utf8');
+      await client.query(sql);
+      appliedFiles.push(file);
+    }
   }
 
-  return pendingFiles;
+  await apply(await listPendingMigrations(client, files));
+  await apply((await listPendingMigrations(client, files)).filter(file => !appliedFiles.includes(file)));
+
+  return appliedFiles;
 }
 
 module.exports = { migrationVersion, listPendingMigrations, runMigrations };

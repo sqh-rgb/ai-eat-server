@@ -58,12 +58,12 @@ test('migrationVersion removes the PostgreSQL SQL suffix', () => {
   assert.equal(migrationVersion('008_name.postgres.sql'), '008_name');
 });
 
-test('lists 001 as pending when the migration state table does not exist yet', async () => {
+test('lists only 001 as pending when the migration state table does not exist yet', async () => {
   const client = createClient();
 
   const pending = await listPendingMigrations(client, ['002_later.sql', '001_core.sql']);
 
-  assert.deepEqual(pending, ['001_core.sql', '002_later.sql']);
+  assert.deepEqual(pending, ['001_core.sql']);
 });
 
 test('skips a migration whose version is already recorded', async t => {
@@ -95,6 +95,32 @@ test('runs 001 first and applies later versions in filename order', async t => {
   assert.deepEqual(applied, ['001_core.sql', '002_second.sql', '003_third.postgres.sql']);
   const result = await client.query('SELECT version FROM migration_log ORDER BY sequence');
   assert.deepEqual(result.rows.map(row => row.version), ['001_core', '002_second', '003_third']);
+});
+
+test('rechecks migration state after 001 before applying later versions', async t => {
+  const client = createClient();
+  const directory = await createMigrationDirectory(t, [
+    {
+      name: '001_core.sql',
+      sql: `
+        CREATE TABLE schema_migrations (version TEXT PRIMARY KEY);
+        CREATE TABLE migration_log (sequence SERIAL PRIMARY KEY, version TEXT NOT NULL);
+        INSERT INTO schema_migrations(version) VALUES ('001_core'), ('002_already_recorded');
+        INSERT INTO migration_log(version) VALUES ('001_core');
+      `,
+    },
+    {
+      name: '002_already_recorded.sql',
+      sql: "INSERT INTO schema_migrations(version) VALUES ('002_already_recorded');",
+    },
+    { name: '003_later.sql', sql: laterMigrationSql('003_later') },
+  ]);
+
+  const applied = await runMigrations(client, directory);
+
+  assert.deepEqual(applied, ['001_core.sql', '003_later.sql']);
+  const result = await client.query('SELECT version FROM migration_log ORDER BY sequence');
+  assert.deepEqual(result.rows.map(row => row.version), ['001_core', '003_later']);
 });
 
 test('requiring the migration CLI does not start a migration', () => {
