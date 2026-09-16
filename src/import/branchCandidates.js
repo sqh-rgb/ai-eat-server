@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { protectApprovedUpdates } = require('./approvedCandidateGuard');
 
 const ALLOWED_SOURCES = new Set(['amap', 'swu-official', 'manual', 'merchant-authorized']);
 
@@ -82,7 +83,8 @@ async function importBranches(client, records) {
     await client.query(
       `INSERT INTO merchants(id,canonical_name,aliases,review_status)
        VALUES($1,$2,$3::jsonb,'candidate')
-       ON CONFLICT(id) DO UPDATE SET canonical_name=EXCLUDED.canonical_name,aliases=EXCLUDED.aliases,updated_at=NOW()`,
+       ON CONFLICT(id) DO UPDATE SET canonical_name=EXCLUDED.canonical_name,aliases=EXCLUDED.aliases,updated_at=NOW()
+       ${protectApprovedUpdates('merchants')}`,
       [record.merchantId, record.name, JSON.stringify(record.aliases)],
     );
     await client.query(
@@ -93,7 +95,8 @@ async function importBranches(client, records) {
        ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,aliases=EXCLUDED.aliases,address=EXCLUDED.address,
          area=EXCLUDED.area,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,cuisine=EXCLUDED.cuisine,
          phone=EXCLUDED.phone,avg_cost=EXCLUDED.avg_cost,external_rating=EXCLUDED.external_rating,
-         source_updated_at=NOW(),updated_at=NOW()`,
+         source_updated_at=NOW(),updated_at=NOW()
+       ${protectApprovedUpdates('branches')}`,
       [
         record.id, record.merchantId, record.amapPoi, record.name, JSON.stringify(record.aliases),
         record.address, record.area, record.lat, record.lng, record.cuisine, record.phone,

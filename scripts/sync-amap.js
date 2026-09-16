@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { getPool, withTransaction, closePool } = require('../src/db/pool');
 const { collectPois } = require('../src/providers/amapProvider');
+const { protectApprovedUpdates } = require('../src/import/approvedCandidateGuard');
 
 function argument(name, fallback = '') {
   const index = process.argv.indexOf(name);
@@ -35,6 +36,7 @@ async function upsertPois(client, collection) {
       INSERT INTO merchants(id,canonical_name,aliases,review_status)
       VALUES($1,$2,$3::jsonb,'candidate')
       ON CONFLICT(id) DO UPDATE SET canonical_name=EXCLUDED.canonical_name,aliases=EXCLUDED.aliases,updated_at=NOW()
+      ${protectApprovedUpdates('merchants')}
       `,
       [`merchant:${poi.externalId}`, poi.name, JSON.stringify(poi.alias ? [poi.alias] : [])],
     );
@@ -48,6 +50,7 @@ async function upsertPois(client, collection) {
         area=CASE WHEN branches.area='' THEN EXCLUDED.area ELSE branches.area END,
         latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,cuisine=EXCLUDED.cuisine,phone=EXCLUDED.phone,
         avg_cost=EXCLUDED.avg_cost,external_rating=EXCLUDED.external_rating,source_updated_at=NOW(),updated_at=NOW()
+      ${protectApprovedUpdates('branches')}
       `,
       [
         poi.externalId, `merchant:${poi.externalId}`, poi.name, JSON.stringify(poi.alias ? [poi.alias] : []),

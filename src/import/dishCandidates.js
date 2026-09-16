@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { protectApprovedUpdates } = require('./approvedCandidateGuard');
 
 const ALLOWED_SOURCES = new Set(['amap', 'swu-official', 'social-discovery', 'qq-channel', 'manual', 'merchant-authorized']);
 
@@ -53,7 +54,7 @@ async function importDishes(client, records) {
   let inserted = 0;
   let updated = 0;
   for (const record of records) {
-    const externalId = `${record.branchId}:${record.name}`;
+    const externalId = record.id;
     const sourceRecordId = `${record.sourceId}:dish:${crypto.createHash('sha256').update(externalId).digest('hex')}`;
     const safePayload = {
       branchId: record.branchId, name: record.name, aliases: record.aliases, category: record.category,
@@ -72,7 +73,8 @@ async function importDishes(client, records) {
       `INSERT INTO dishes(id,branch_id,name,aliases,category,price,spice_level,suitable_solo,review_status,primary_source_id)
        VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8,'candidate',$9)
        ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,aliases=EXCLUDED.aliases,category=EXCLUDED.category,
-         price=EXCLUDED.price,spice_level=EXCLUDED.spice_level,suitable_solo=EXCLUDED.suitable_solo,updated_at=NOW()`,
+         price=EXCLUDED.price,spice_level=EXCLUDED.spice_level,suitable_solo=EXCLUDED.suitable_solo,updated_at=NOW()
+       ${protectApprovedUpdates('dishes')}`,
       [record.id, record.branchId, record.name, JSON.stringify(record.aliases), record.category, record.price, record.spiceLevel, record.suitableSolo, record.sourceId],
     );
     if (!existing.rows[0]) inserted += 1;

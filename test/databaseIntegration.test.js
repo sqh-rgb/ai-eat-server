@@ -79,6 +79,66 @@ test('商家和菜品先以 candidate 导入，重复导入保持幂等且不覆
   }
 });
 
+test('候选同步不会覆盖已批准目录数据，但会刷新来源记录', async () => {
+  const { pool, client } = await memoryClient();
+  try {
+    const branchId = 'approved-branch-1';
+    const merchantId = 'merchant:approved-branch-1';
+    const dishId = 'approved-dish-1';
+    const initialBranch = prepareBranches([{
+      branchId, brandId: merchantId, sourceId: 'manual', externalId: 'manual-branch-1',
+      name: '审核名称', address: '审核地址', avgCost: 18,
+    }]);
+    const initialDish = prepareDishes([{
+      id: dishId, branchId, sourceId: 'manual', name: '审核菜品', price: 18,
+    }]);
+    await importBranches(client, initialBranch);
+    await importDishes(client, initialDish);
+    await client.query("UPDATE merchants SET review_status='approved' WHERE id=$1", [merchantId]);
+    await client.query("UPDATE branches SET review_status='approved' WHERE id=$1", [branchId]);
+    await client.query("UPDATE dishes SET review_status='approved' WHERE id=$1", [dishId]);
+    const beforeBranchSource = (await client.query(
+      "SELECT normalized_hash FROM source_records WHERE id='manual:branch:manual-branch-1'",
+    )).rows[0].normalized_hash;
+    const dishSource = await client.query(
+      "SELECT normalized_hash FROM source_records WHERE source_id='manual' AND entity_type='dish'",
+    );
+    assert.equal(dishSource.rows.length, 1);
+    const beforeDishSource = dishSource.rows[0].normalized_hash;
+
+    await importBranches(client, prepareBranches([{
+      branchId, brandId: merchantId, sourceId: 'manual', externalId: 'manual-branch-1',
+      name: '候选新名称', address: '候选新地址', avgCost: 38,
+    }]));
+    await importDishes(client, prepareDishes([{
+      id: dishId, branchId, sourceId: 'manual', name: '候选新菜品', price: 38,
+    }]));
+
+    assert.deepEqual((await client.query(
+      'SELECT canonical_name, review_status FROM merchants WHERE id=$1', [merchantId],
+    )).rows[0], { canonical_name: '审核名称', review_status: 'approved' });
+    assert.deepEqual((await client.query(
+      'SELECT name,address,avg_cost,review_status FROM branches WHERE id=$1', [branchId],
+    )).rows[0], { name: '审核名称', address: '审核地址', avg_cost: 18, review_status: 'approved' });
+    assert.deepEqual((await client.query(
+      'SELECT name,price,review_status FROM dishes WHERE id=$1', [dishId],
+    )).rows[0], { name: '审核菜品', price: 18, review_status: 'approved' });
+    const afterBranchSource = (await client.query(
+      "SELECT normalized_hash FROM source_records WHERE id='manual:branch:manual-branch-1'",
+    )).rows[0].normalized_hash;
+    const afterDishSource = await client.query(
+      "SELECT normalized_hash FROM source_records WHERE source_id='manual' AND entity_type='dish' AND external_id=$1",
+      [dishId],
+    );
+    assert.equal(afterDishSource.rows.length, 1);
+    assert.notEqual(afterBranchSource, beforeBranchSource);
+    assert.notEqual(afterDishSource.rows[0].normalized_hash, beforeDishSource);
+  } finally {
+    client.release();
+    await pool.end();
+  }
+});
+
 test('集中审核会保存候选分店的旧值并写入完整核实结论', async () => {
   const { pool, client } = await memoryClient();
   try {
