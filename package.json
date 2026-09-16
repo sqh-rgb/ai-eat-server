@@ -5,11 +5,36 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "db:migrate": "node scripts/migrate.js",
+    "db:configure-local": "pwsh -NoProfile -File scripts/configure-local-db.ps1",
+    "reviews:import": "node scripts/import-approved.js",
+    "reviews:rollback": "node scripts/rollback-import.js",
+    "reviews:moderate": "node scripts/moderate-user-review.js",
+    "sync:amap": "node scripts/sync-amap.js",
+    "screen:candidates": "node scripts/screen-candidates.js",
+    "ratings:aggregate": "node scripts/aggregate-ratings.js",
+    "import:branches": "node scripts/import-branches.js",
+    "import:dishes": "node scripts/import-dishes.js",
+    "import:licenses": "node scripts/import-government-licenses.js",
+    "import:leads": "node scripts/import-discovery-leads.js",
+    "review:entity": "node scripts/review-entity.js",
+    "audit:import": "node scripts/import-branch-audit.js",
+    "audit:rollback": "node scripts/rollback-branch-audit.js",
+    "data:status": "node scripts/data-status.js",
+    "test": "node --test"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "pg": "^8.16.3"
+  },
+  "overrides": {
+    "qs": "^6.16.0"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.14"
   }
 }

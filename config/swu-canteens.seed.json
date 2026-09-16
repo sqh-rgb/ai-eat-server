@@ -1,0 +1,75 @@
+{
+  "records": [
+    {
+      "branchId": "swu-canteen-hefeng",
+      "sourceId": "swu-official",
+      "externalId": "he-feng-lou",
+      "name": "禾丰楼",
+      "aliases": ["禾丰楼食堂"],
+      "address": "西南大学北碚校区",
+      "area": "校内",
+      "cuisine": "学生食堂",
+      "evidenceUrl": "https://www.swu.edu.cn/info/1066/3542.htm"
+    },
+    {
+      "branchId": "swu-canteen-taoyuan",
+      "sourceId": "swu-official",
+      "externalId": "tao-yuan-shi-tang",
+      "name": "桃园食堂",
+      "address": "西南大学北碚校区",
+      "area": "校内",
+      "cuisine": "学生食堂",
+      "evidenceUrl": "https://www.swu.edu.cn/info/1066/3542.htm"
+    },
+    {
+      "branchId": "swu-canteen-juyuan",
+      "sourceId": "swu-official",
+      "externalId": "ju-yuan-shi-tang",
+      "name": "橘园食堂",
+      "address": "西南大学北碚校区",
+      "area": "校内",
+      "cuisine": "学生食堂",
+      "evidenceUrl": "https://www.swu.edu.cn/info/1066/3542.htm"
+    },
+    {
+      "branchId": "swu-canteen-meiyuan",
+      "sourceId": "swu-official",
+      "externalId": "mei-yuan-shi-tang",
+      "name": "梅园食堂",
+      "address": "西南大学北碚校区",
+      "area": "校内",
+      "cuisine": "学生食堂",
+      "evidenceUrl": "https://www.swu.edu.cn/info/1066/3542.htm"
+    },
+    {
+      "branchId": "swu-canteen-xingyuan",
+      "sourceId": "swu-official",
+      "externalId": "xing-yuan-shi-tang",
+      "name": "杏园食堂",
+      "address": "西南大学北碚校区",
+      "area": "校内",
+      "cuisine": "学生食堂",
+      "evidenceUrl": "https://www.swu.edu.cn/info/1066/3542.htm"
+    },
+    {
+      "branchId": "swu-canteen-liyuan",
+      "sourceId": "swu-official",
+      "externalId": "li-yuan-shi-tang",
+      "name": "李园食堂",
+      "address": "西南大学北碚校区",
+      "area": "校内",
+      "cuisine": "学生食堂",
+      "evidenceUrl": "https://www.swu.edu.cn/info/1066/3542.htm"
+    },
+    {
+      "branchId": "swu-canteen-zhuyuan",
+      "sourceId": "swu-official",
+      "externalId": "zhu-yuan-shi-tang",
+      "name": "竹园食堂",
+      "address": "西南大学北碚校区",
+      "area": "校内",
+      "cuisine": "学生食堂",
+      "evidenceUrl": "https://www.swu.edu.cn/info/1066/25670.htm"
+    }
+  ]
+}

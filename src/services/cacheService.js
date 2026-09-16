@@ -31,11 +31,12 @@ function set(key, data) {
 }
 
 /** 定时清理过期条目 */
-setInterval(() => {
+const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of store) {
     if (now - entry.time > CACHE_TTL * 1000) store.delete(key);
   }
 }, 300000); // 每 5 分钟清理一次
+cleanupTimer.unref?.();
 
 module.exports = { get, set, makeKey };
