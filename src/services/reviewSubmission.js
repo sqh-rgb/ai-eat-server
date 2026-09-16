@@ -1,7 +1,4 @@
-const ALLOWED_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
-const ALLOWED_MEDIA_KINDS = new Set(['sticker', 'review_photo']);
 const MAX_MEDIA_ITEMS = 9;
-const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 
 function validationError(message) {
   const error = new Error(message);
@@ -21,35 +18,20 @@ function normalizeMedia(media) {
   if (!Array.isArray(media) || media.length > MAX_MEDIA_ITEMS) {
     throw validationError(`media 必须是最多 ${MAX_MEDIA_ITEMS} 项的数组`);
   }
-  return media.map((item, index) => {
+  const normalized = media.map((item, index) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw validationError(`第 ${index + 1} 个媒体项格式错误`);
-    const mediaKind = String(item.mediaKind || '').trim();
-    const storageKey = String(item.storageKey || '').trim();
-    const mimeType = String(item.mimeType || '').trim().toLowerCase();
-    const byteSize = Number(item.byteSize);
-    if (!ALLOWED_MEDIA_KINDS.has(mediaKind)) throw validationError(`第 ${index + 1} 个媒体类型不受支持`);
-    if (!storageKey || storageKey.length > 500 || /^(?:https?:|data:|file:)/i.test(storageKey)) {
-      throw validationError(`第 ${index + 1} 个媒体必须使用已上传的安全 storageKey`);
-    }
-    if (!ALLOWED_MEDIA_TYPES.has(mimeType)) throw validationError(`第 ${index + 1} 个媒体格式不受支持`);
-    if (!Number.isInteger(byteSize) || byteSize < 1 || byteSize > MAX_MEDIA_BYTES) {
-      throw validationError(`第 ${index + 1} 个媒体大小必须在 1 字节到 10MB 之间`);
-    }
-    const dimension = (value, name) => {
-      if (value === undefined || value === null) return null;
-      if (!Number.isInteger(value) || value < 1 || value > 12000) throw validationError(`第 ${index + 1} 个媒体${name}无效`);
-      return value;
-    };
+    const uploadIntentId = String(item.uploadIntentId || '').trim();
+    if (!uploadIntentId || uploadIntentId.length > 200) throw validationError(`第 ${index + 1} 个上传意图无效`);
+    if (item.rightsConfirmed !== true) throw validationError(`第 ${index + 1} 个媒体必须确认拥有图片权利`);
     return {
-      mediaKind,
-      storageKey,
-      mimeType,
-      byteSize,
-      width: dimension(item.width, '宽度'),
-      height: dimension(item.height, '高度'),
-      rightsConfirmed: item.rightsConfirmed === true,
+      uploadIntentId,
+      rightsConfirmed: true,
     };
   });
+  if (new Set(normalized.map(item => item.uploadIntentId)).size !== normalized.length) {
+    throw validationError('同一上传意图不能在一条评价中重复使用');
+  }
+  return normalized;
 }
 
 function validateReviewSubmission(input) {
@@ -65,4 +47,4 @@ function validateReviewSubmission(input) {
   return { branchId, dishId, publicText, rating, media: normalizeMedia(body.media) };
 }
 
-module.exports = { validateReviewSubmission, MAX_MEDIA_ITEMS, MAX_MEDIA_BYTES };
+module.exports = { validateReviewSubmission, MAX_MEDIA_ITEMS };

@@ -34,6 +34,8 @@ ALTER TABLE user_submission_media
 
 CREATE INDEX IF NOT EXISTS idx_upload_intents_user_status
   ON user_upload_intents(user_id,status,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_upload_intents_user_created
+  ON user_upload_intents(user_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_upload_intents_expiry
   ON user_upload_intents(status,expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_submission_media_upload_intent

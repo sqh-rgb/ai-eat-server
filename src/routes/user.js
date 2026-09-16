@@ -1,12 +1,7 @@
 const { Router } = require('express');
 const { requireAuth } = require('../middleware/auth');
-const users = require('../repositories/userRepository');
-
-const router = Router();
-router.use('/user', requireAuth);
-router.use('/favorites', requireAuth);
-router.use('/records', requireAuth);
-router.use('/recommendation-events', requireAuth);
+const defaultUsers = require('../repositories/userRepository');
+const defaultUploads = require('../services/storageUploads');
 
 function validationError(message) {
   const error = new Error(message);
@@ -44,6 +39,50 @@ function pagination(query) {
     offset: boundedNumber(query.offset, 'offset', 0, 100000, { integer: true, fallback: 0 }),
   };
 }
+
+function createUserRouter({ users = defaultUsers, uploads = defaultUploads } = {}) {
+  const router = Router();
+  router.use('/user', requireAuth);
+  router.use('/favorites', requireAuth);
+  router.use('/records', requireAuth);
+  router.use('/recommendation-events', requireAuth);
+
+  router.post('/user/uploads', async (req, res, next) => {
+    try {
+      const item = await uploads.issueUpload({
+        userId: req.userId, userSubjectHash: req.userSubjectHash,
+        accessToken: req.authToken, input: req.body,
+      });
+      return res.status(201).json({ item });
+    } catch (error) { return next(error); }
+  });
+
+  router.post('/user/uploads/:id/confirm', async (req, res, next) => {
+    try {
+      const item = await uploads.confirmUpload({
+        userId: req.userId, accessToken: req.authToken,
+        intentId: shortId(req.params.id, '上传 ID'),
+      });
+      return res.json({ item });
+    } catch (error) { return next(error); }
+  });
+
+  router.get('/user/uploads/:id/preview', async (req, res, next) => {
+    try {
+      const item = await uploads.createPreviewUrl({
+        userId: req.userId, accessToken: req.authToken,
+        intentId: shortId(req.params.id, '上传 ID'),
+      });
+      return res.json({ item });
+    } catch (error) { return next(error); }
+  });
+
+  router.delete('/user/uploads/:id', async (req, res, next) => {
+    try {
+      await uploads.deleteUpload({ userId: req.userId, intentId: shortId(req.params.id, '上传 ID') });
+      return res.status(204).end();
+    } catch (error) { return next(error); }
+  });
 
 router.get('/user/preferences', async (req, res, next) => {
   try { return res.json({ preferences: await users.getPreferences(req.userId) }); }
@@ -152,4 +191,9 @@ router.post('/user/reviews', async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
-module.exports = { router, textArray, boundedNumber, pagination };
+  return router;
+}
+
+const router = createUserRouter();
+
+module.exports = { router, createUserRouter, textArray, boundedNumber, pagination };

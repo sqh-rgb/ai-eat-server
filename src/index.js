@@ -87,6 +87,9 @@ app.use((err, _req, res, _next) => {
   if (err.status === 409) {
     return res.status(409).json({ error: { code: err.code || 'CONFLICT', message: err.message } });
   }
+  if ([404, 502, 503].includes(err.status)) {
+    return res.status(err.status).json({ error: { code: err.code || 'REQUEST_FAILED', message: err.message } });
+  }
   if ([401, 403, 429].includes(err.status)) {
     return res.status(err.status).json({ error: { code: err.code || 'AUTH_ERROR', message: err.message } });
   }

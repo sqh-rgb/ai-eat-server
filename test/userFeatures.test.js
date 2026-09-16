@@ -5,6 +5,7 @@ const path = require('node:path');
 const { newDb, DataType } = require('pg-mem');
 const { hashIdentity } = require('../src/services/identityHash');
 const { moderateReviewSubmission } = require('../src/services/reviewModeration');
+const { createReviewSubmission } = require('../src/repositories/userRepository');
 const { textArray, boundedNumber, pagination } = require('../src/routes/user');
 
 async function memoryClient() {
@@ -17,6 +18,51 @@ async function memoryClient() {
   const files = fs.readdirSync(directory).filter(name => name.endsWith('.sql') && !name.endsWith('.postgres.sql')).sort();
   for (const file of files) await pool.query(fs.readFileSync(path.join(directory, file), 'utf8'));
   return { pool, client: await pool.connect() };
+}
+
+function transactionDatabase(client) {
+  return {
+    async withTransaction(work) {
+      await client.query('BEGIN');
+      try {
+        const result = await work(client);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      }
+    },
+  };
+}
+
+async function seedReviewTarget(client) {
+  await client.query("INSERT INTO merchants(id,canonical_name,review_status) VALUES('media-merchant','图片店','approved')");
+  await client.query("INSERT INTO branches(id,merchant_id,name,review_status,student_suitable,existence_status) VALUES('media-branch','media-merchant','图片店','approved',TRUE,'confirmed')");
+}
+
+async function seedUploadIntent(client, { id, userId = 'user-1', status = 'uploaded' }) {
+  await client.query(`INSERT INTO user_upload_intents(
+    id,user_id,user_subject_hash,storage_key,media_kind,expected_mime_type,expected_byte_size,
+    actual_mime_type,actual_byte_size,status,expires_at,confirmed_at
+  ) VALUES($1,$2,'subject-1',$3,'review_photo','image/png',8,'image/png',8,$4,NOW()+INTERVAL '1 hour',NOW())`,
+  [id, userId, `${userId}/${id}.png`, status]);
+}
+
+function reviewInput(uploadIntentId, rightsConfirmed = true) {
+  return {
+    branchId: 'media-branch', publicText: '图片真实，味道不错', rating: 5,
+    media: [{ uploadIntentId, rightsConfirmed }],
+  };
+}
+
+async function submitWith(client, uploadIntentId, overrides = {}) {
+  return createReviewSubmission({
+    userId: overrides.userId || 'user-1',
+    userSubjectHash: overrides.userSubjectHash || 'subject-1',
+    networkValue: '127.0.0.1', deviceValue: 'device-1',
+    input: reviewInput(uploadIntentId, overrides.rightsConfirmed ?? true),
+  }, { database: transactionDatabase(client) });
 }
 
 test('身份哈希稳定且不同用途不能相互关联', () => {
@@ -59,5 +105,64 @@ test('人工审核层仍禁止商家批准自己的评价', async () => {
     await assert.rejects(moderateReviewSubmission(client, {
       submissionId: 's2', decision: 'approved', reason: '测试',
     }), /不得批准为自家门店评价/);
+  } finally { client.release(); await pool.end(); }
+});
+
+test('评价事务拒绝附加其他用户的上传意图并回滚投稿', async () => {
+  const { pool, client } = await memoryClient();
+  try {
+    await seedReviewTarget(client);
+    await seedUploadIntent(client, { id: 'cross-user', userId: 'user-2' });
+    await assert.rejects(submitWith(client, 'cross-user'), error => error.code === 'UPLOAD_NOT_ATTACHABLE');
+    assert.equal((await client.query('SELECT COUNT(*)::int AS count FROM user_review_submissions')).rows[0].count, 0);
+  } finally { client.release(); await pool.end(); }
+});
+
+test('评价事务拒绝尚未确认完成的上传意图并回滚投稿', async () => {
+  const { pool, client } = await memoryClient();
+  try {
+    await seedReviewTarget(client);
+    await seedUploadIntent(client, { id: 'not-confirmed', status: 'issued' });
+    await assert.rejects(submitWith(client, 'not-confirmed'), error => error.code === 'UPLOAD_NOT_ATTACHABLE');
+    assert.equal((await client.query('SELECT COUNT(*)::int AS count FROM user_review_submissions')).rows[0].count, 0);
+  } finally { client.release(); await pool.end(); }
+});
+
+test('评价媒体必须明确确认图片权利', async () => {
+  const { pool, client } = await memoryClient();
+  try {
+    await seedReviewTarget(client);
+    await seedUploadIntent(client, { id: 'rights-not-confirmed' });
+    await assert.rejects(submitWith(client, 'rights-not-confirmed', { rightsConfirmed: false }), /确认拥有图片权利/);
+    assert.equal((await client.query("SELECT status FROM user_upload_intents WHERE id='rights-not-confirmed'")).rows[0].status, 'uploaded');
+  } finally { client.release(); await pool.end(); }
+});
+
+test('同一上传意图只能附加到一条评价', async () => {
+  const { pool, client } = await memoryClient();
+  try {
+    await seedReviewTarget(client);
+    await seedUploadIntent(client, { id: 'single-attach' });
+    await submitWith(client, 'single-attach');
+    await assert.rejects(submitWith(client, 'single-attach'), error => error.code === 'UPLOAD_NOT_ATTACHABLE');
+    assert.equal((await client.query("SELECT COUNT(*)::int AS count FROM user_submission_media WHERE upload_intent_id='single-attach'")).rows[0].count, 1);
+    assert.equal((await client.query('SELECT COUNT(*)::int AS count FROM user_review_submissions')).rows[0].count, 1);
+  } finally { client.release(); await pool.end(); }
+});
+
+test('合法上传意图在评价事务内原子附加且媒体元数据只取自服务端', async () => {
+  const { pool, client } = await memoryClient();
+  try {
+    await seedReviewTarget(client);
+    await seedUploadIntent(client, { id: 'atomic-attach' });
+    const submission = await submitWith(client, 'atomic-attach');
+    const intent = (await client.query("SELECT status,attached_submission_id FROM user_upload_intents WHERE id='atomic-attach'")).rows[0];
+    const media = (await client.query("SELECT upload_intent_id,storage_key,mime_type,byte_size,rights_confirmed FROM user_submission_media WHERE upload_intent_id='atomic-attach'")).rows[0];
+    assert.equal(intent.status, 'attached');
+    assert.equal(intent.attached_submission_id, submission.id);
+    assert.deepEqual(media, {
+      upload_intent_id: 'atomic-attach', storage_key: 'user-1/atomic-attach.png',
+      mime_type: 'image/png', byte_size: 8, rights_confirmed: true,
+    });
   } finally { client.release(); await pool.end(); }
 });

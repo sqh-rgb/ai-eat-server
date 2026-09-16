@@ -47,6 +47,20 @@ function getUserAuthClient(accessToken) {
   });
 }
 
+function getServiceAuthClient() {
+  const url = String(process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
+  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!url || !key) {
+    const error = new Error('服务端存储凭证尚未配置');
+    error.code = 'STORAGE_SERVICE_NOT_CONFIGURED';
+    error.status = 503;
+    throw error;
+  }
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+}
+
 function safeUser(user) {
   if (!user) return null;
   return {
@@ -161,7 +175,7 @@ async function updatePassword(accessToken, password) {
 }
 
 module.exports = {
-  authConfigured, getAuthClient, getUserAuthClient, safeUser, normalizeAuthError,
+  authConfigured, getAuthClient, getUserAuthClient, getServiceAuthClient, safeUser, normalizeAuthError,
   signUpWithEmail, signInWithEmail, refreshEmailSession,
   requestPasswordReset, verifyAccessToken, signOutAccessToken, updatePassword,
 };

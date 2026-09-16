@@ -24,12 +24,41 @@ $$;
 REVOKE ALL ON FUNCTION public.is_ai_eat_admin(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.is_ai_eat_admin(TEXT) TO authenticated;
 
+CREATE OR REPLACE FUNCTION public.has_valid_ai_eat_upload_intent(
+  subject TEXT,
+  object_key TEXT,
+  object_bucket TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+  SELECT EXISTS(
+    SELECT 1
+    FROM public.user_upload_intents
+    WHERE user_id=subject
+      AND storage_key=object_key
+      AND bucket_id=object_bucket
+      AND status='issued'
+      AND expires_at>NOW()
+  )
+$$;
+
+REVOKE ALL ON FUNCTION public.has_valid_ai_eat_upload_intent(TEXT,TEXT,TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.has_valid_ai_eat_upload_intent(TEXT,TEXT,TEXT) TO authenticated;
+
 DROP POLICY IF EXISTS ai_eat_review_upload_insert ON storage.objects;
 CREATE POLICY ai_eat_review_upload_insert ON storage.objects
 FOR INSERT TO authenticated
 WITH CHECK (
   bucket_id='ai-eat-review-submissions'
-  AND (storage.foldername(name))[1]=(SELECT auth.uid()::text)
+  AND public.has_valid_ai_eat_upload_intent(
+    (SELECT auth.uid()::text),
+    name,
+    bucket_id
+  )
 );
 
 DROP POLICY IF EXISTS ai_eat_review_upload_read ON storage.objects;
@@ -44,12 +73,6 @@ USING (
 );
 
 DROP POLICY IF EXISTS ai_eat_review_upload_delete ON storage.objects;
-CREATE POLICY ai_eat_review_upload_delete ON storage.objects
-FOR DELETE TO authenticated
-USING (
-  bucket_id='ai-eat-review-submissions'
-  AND owner_id=(SELECT auth.uid()::text)
-);
 
 INSERT INTO schema_migrations(version) VALUES ('013_private_review_storage')
 ON CONFLICT (version) DO NOTHING;

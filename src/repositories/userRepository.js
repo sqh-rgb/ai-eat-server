@@ -142,7 +142,8 @@ async function recordRecommendationEvent(userId, event) {
   });
 }
 
-async function createReviewSubmission({ userId, userSubjectHash, networkValue, deviceValue, input }) {
+async function createReviewSubmission({ userId, userSubjectHash, networkValue, deviceValue, input }, dependencies = {}) {
+  const database = dependencies.database || db;
   const review = validateReviewSubmission(input);
   const clientRequestId = String(input.clientRequestId || '').trim() || null;
   if (clientRequestId && clientRequestId.length > 200) {
@@ -151,7 +152,7 @@ async function createReviewSubmission({ userId, userSubjectHash, networkValue, d
     error.status = 400;
     throw error;
   }
-  return db.withTransaction(async client => {
+  return database.withTransaction(async client => {
     await requirePublicBranch(client, review.branchId, review.dishId);
     if (clientRequestId) {
       const prior = await client.query(
@@ -160,17 +161,26 @@ async function createReviewSubmission({ userId, userSubjectHash, networkValue, d
       );
       if (prior.rows[0]) return { ...prior.rows[0], duplicate: true };
     }
+    const uploadIntents = new Map();
+    for (const media of [...review.media].sort((left, right) => left.uploadIntentId.localeCompare(right.uploadIntentId))) {
+      const result = await client.query(
+        `SELECT * FROM user_upload_intents
+         WHERE id=$1 AND user_id=$2 AND status='uploaded'
+         FOR UPDATE`,
+        [media.uploadIntentId, userId],
+      );
+      const intent = result.rows[0];
+      if (!intent || !intent.actual_mime_type || !Number.isInteger(Number(intent.actual_byte_size))) {
+        const error = new Error('上传图片不存在、尚未确认或已经附加到其他评价');
+        error.code = 'UPLOAD_NOT_ATTACHABLE';
+        error.status = 409;
+        throw error;
+      }
+      uploadIntents.set(media.uploadIntentId, intent);
+    }
     const contentFingerprint = hashIdentity(review.publicText.replace(/[\s\p{P}\p{S}]+/gu, '').toLowerCase(), 'content');
     const deviceSubjectHash = hashIdentity(deviceValue, 'device');
     const networkSubjectHash = hashIdentity(networkValue, 'network');
-    for (const item of review.media) {
-      if (!item.storageKey.startsWith(`review-submissions/${userSubjectHash}/`)) {
-        const error = new Error('图片 storageKey 不属于当前用户的待审目录');
-        error.code = 'INVALID_MEDIA_OWNER';
-        error.status = 400;
-        throw error;
-      }
-    }
     const countResult = await client.query(
       `SELECT
         COUNT(*) FILTER (WHERE user_subject_hash=$1 AND branch_id=$2 AND created_at>=NOW()-INTERVAL '30 days')::integer AS same_user_branch_30d,
@@ -211,12 +221,26 @@ async function createReviewSubmission({ userId, userSubjectHash, networkValue, d
         contentFingerprint, risk.riskScore, risk.decision, JSON.stringify(risk.signals), clientRequestId],
     );
     for (const media of review.media) {
+      const intent = uploadIntents.get(media.uploadIntentId);
       await client.query(
-        `INSERT INTO user_submission_media(id,submission_id,media_kind,storage_key,mime_type,byte_size,width,height,rights_confirmed)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [crypto.randomUUID(), id, media.mediaKind, media.storageKey, media.mimeType,
-          media.byteSize, media.width, media.height, media.rightsConfirmed],
+        `INSERT INTO user_submission_media(
+          id,submission_id,media_kind,storage_key,mime_type,byte_size,width,height,rights_confirmed,upload_intent_id
+         ) VALUES($1,$2,$3,$4,$5,$6,NULL,NULL,$7,$8)`,
+        [crypto.randomUUID(), id, intent.media_kind, intent.storage_key, intent.actual_mime_type,
+          Number(intent.actual_byte_size), media.rightsConfirmed, media.uploadIntentId],
       );
+      const attached = await client.query(
+        `UPDATE user_upload_intents
+         SET status='attached',attached_submission_id=$2,updated_at=NOW()
+         WHERE id=$1 AND user_id=$3 AND status='uploaded'`,
+        [media.uploadIntentId, id, userId],
+      );
+      if (attached.rowCount !== 1) {
+        const error = new Error('上传图片已经附加到其他评价');
+        error.code = 'UPLOAD_NOT_ATTACHABLE';
+        error.status = 409;
+        throw error;
+      }
     }
     await client.query(
       `INSERT INTO review_risk_events(
