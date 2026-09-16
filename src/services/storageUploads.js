@@ -46,7 +46,7 @@ function createStorageUploads({
   randomUUID = crypto.randomUUID,
   clock = () => new Date(),
 } = {}) {
-  async function issueUpload({ userId, userSubjectHash, accessToken, input }) {
+  async function issueUpload({ userId, userSubjectHash, input }) {
     const upload = validateUploadRequest(input);
     const id = randomUUID();
     const storageKey = `${userId}/${id}.${MIME_EXTENSIONS.get(upload.mimeType)}`;
@@ -77,15 +77,8 @@ function createStorageUploads({
         [id, userId, userSubjectHash, storageKey, upload.mediaKind, upload.mimeType, upload.byteSize, expiresAt],
       );
     });
-    const storage = getUserClient(accessToken).storage.from(BUCKET);
-    const { data, error } = await storage.createSignedUploadUrl(storageKey, { upsert: false });
-    if (error || !data) {
-      await database.query("UPDATE user_upload_intents SET status='rejected',updated_at=NOW() WHERE id=$1", [id]);
-      throw serviceError('暂时无法创建图片上传地址', 'STORAGE_UNAVAILABLE', 502);
-    }
     return {
-      id, bucket: BUCKET, storageKey, signedUrl: data.signedUrl,
-      token: data.token, expiresAt: expiresAt.toISOString(),
+      id, bucket: BUCKET, storageKey, expiresAt: expiresAt.toISOString(),
       mimeType: upload.mimeType, byteSize: upload.byteSize, mediaKind: upload.mediaKind,
     };
   }
@@ -99,10 +92,14 @@ function createStorageUploads({
     return result.rows[0];
   }
 
-  async function removeWithService(storageKey) {
-    const storage = getServiceClient().storage.from(BUCKET);
+  async function removeFromServiceStorage(storage, storageKey) {
     const { error } = await storage.remove([storageKey]);
     if (error) throw serviceError('图片删除失败，请稍后再试', 'STORAGE_UNAVAILABLE', 502);
+  }
+
+  async function removeWithService(storageKey) {
+    const storage = getServiceClient().storage.from(BUCKET);
+    await removeFromServiceStorage(storage, storageKey);
   }
 
   async function confirmUpload({ userId, accessToken, intentId }) {
@@ -128,10 +125,22 @@ function createStorageUploads({
     }
     const result = await database.query(
       `UPDATE user_upload_intents SET status='uploaded',actual_mime_type=$2,actual_byte_size=$3,
-         confirmed_at=NOW(),updated_at=NOW() WHERE id=$1 AND status='issued' RETURNING *`,
-      [intentId, detectedMime, bytes.length],
+         confirmed_at=NOW(),updated_at=NOW()
+       WHERE id=$1 AND user_id=$4 AND status='issued' AND expires_at>NOW()
+       RETURNING *`,
+      [intentId, detectedMime, bytes.length, userId],
     );
-    return result.rows[0] || ownedIntent(database, userId, intentId);
+    if (result.rows[0]) return result.rows[0];
+    const current = await ownedIntent(database, userId, intentId);
+    if (current.status === 'expired' ||
+        (current.status === 'issued' && new Date(current.expires_at) <= clock())) {
+      await database.query(
+        "UPDATE user_upload_intents SET status='expired',updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='issued' AND expires_at<=NOW()",
+        [intentId, userId],
+      );
+      throw serviceError('上传地址已经过期，请重新申请', 'UPLOAD_EXPIRED', 409);
+    }
+    throw serviceError('上传任务状态已经变化，请重新检查', 'UPLOAD_CONFIRM_CONFLICT', 409);
   }
 
   async function createPreviewUrl({ userId, accessToken, intentId, allowAdmin = false }) {
@@ -146,13 +155,17 @@ function createStorageUploads({
   }
 
   async function deleteUpload({ userId, intentId }) {
-    return database.withTransaction(async client => {
+    let storage;
+    const intent = await database.withTransaction(async client => {
       const intent = await ownedIntent(client, userId, intentId, { lock: true });
       if (intent.status === 'attached') throw serviceError('图片已经附加到评价，需先撤回评价', 'UPLOAD_ATTACHED', 409);
-      if (intent.status === 'deleted') return;
-      await removeWithService(intent.storage_key);
-      await client.query("UPDATE user_upload_intents SET status='deleted',updated_at=NOW() WHERE id=$1 AND user_id=$2", [intentId, userId]);
+      storage = getServiceClient().storage.from(BUCKET);
+      if (intent.status !== 'deleted') {
+        await client.query("UPDATE user_upload_intents SET status='deleted',updated_at=NOW() WHERE id=$1 AND user_id=$2", [intentId, userId]);
+      }
+      return intent;
     });
+    await removeFromServiceStorage(storage, intent.storage_key);
   }
 
   return { issueUpload, confirmUpload, createPreviewUrl, deleteUpload };

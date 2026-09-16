@@ -51,7 +51,7 @@ function createUserRouter({ users = defaultUsers, uploads = defaultUploads } = {
     try {
       const item = await uploads.issueUpload({
         userId: req.userId, userSubjectHash: req.userSubjectHash,
-        accessToken: req.authToken, input: req.body,
+        input: req.body,
       });
       return res.status(201).json({ item });
     } catch (error) { return next(error); }
