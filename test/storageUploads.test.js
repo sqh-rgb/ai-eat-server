@@ -11,6 +11,7 @@ const {
   validateUploadRequest,
 } = require('../src/services/storageUploads');
 const { createUserRouter } = require('../src/routes/user');
+const { stripPgMemUnsupportedRls } = require('./helpers/pgMemMigrations');
 
 async function memoryDatabase() {
   const memory = newDb();
@@ -22,7 +23,10 @@ async function memoryDatabase() {
   const pool = new adapter.Pool();
   const directory = path.join(__dirname, '..', 'db', 'migrations');
   const files = fs.readdirSync(directory).filter(name => name.endsWith('.sql') && !name.endsWith('.postgres.sql')).sort();
-  for (const file of files) await pool.query(fs.readFileSync(path.join(directory, file), 'utf8'));
+  for (const file of files) {
+    const sql = fs.readFileSync(path.join(directory, file), 'utf8');
+    await pool.query(stripPgMemUnsupportedRls(sql));
+  }
   return {
     pool,
     database: {
@@ -82,6 +86,94 @@ test('上传申请拒绝非图片 MIME', () => {
   assert.throws(() => validateUploadRequest({
     mimeType: 'application/pdf', mediaKind: 'review_photo', byteSize: 100,
   }), /只允许/);
+});
+
+test('确认上传成功只返回客户端所需的意图状态', async () => {
+  const { pool, database } = await memoryDatabase();
+  try {
+    await pool.query(`INSERT INTO user_upload_intents(
+      id,user_id,user_subject_hash,storage_key,media_kind,expected_mime_type,expected_byte_size,status,expires_at
+    ) VALUES('intent-confirm','user-1','subject-1','user-1/intent-confirm.png','review_photo','image/png',8,'issued',NOW()+INTERVAL '1 hour')`);
+    const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const uploads = createStorageUploads({
+      database,
+      getUserClient: () => ({ storage: { from: () => ({
+        async download() {
+          return { data: { async arrayBuffer() { return bytes.buffer; } }, error: null };
+        },
+      }) } }),
+    });
+
+    assert.deepEqual(await uploads.confirmUpload({
+      userId: 'user-1', accessToken: 'token', intentId: 'intent-confirm',
+    }), { id: 'intent-confirm', status: 'uploaded' });
+    assert.deepEqual((await pool.query(
+      "SELECT status,actual_mime_type,actual_byte_size FROM user_upload_intents WHERE id='intent-confirm'",
+    )).rows[0], { status: 'uploaded', actual_mime_type: 'image/png', actual_byte_size: 8 });
+  } finally { await pool.end(); }
+});
+
+test('同一上传意图的两个并发确认都幂等返回 uploaded', async () => {
+  const { pool, database } = await memoryDatabase();
+  try {
+    await pool.query(`INSERT INTO user_upload_intents(
+      id,user_id,user_subject_hash,storage_key,media_kind,expected_mime_type,expected_byte_size,status,expires_at
+    ) VALUES('intent-double-confirm','user-1','subject-1','user-1/intent-double-confirm.png','review_photo','image/png',8,'issued',NOW()+INTERVAL '1 hour')`);
+    const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    let downloads = 0;
+    let releaseDownloads;
+    const bothDownloadsStarted = new Promise(resolve => { releaseDownloads = resolve; });
+    const uploads = createStorageUploads({
+      database,
+      getUserClient: () => ({ storage: { from: () => ({
+        async download() {
+          downloads += 1;
+          if (downloads === 2) releaseDownloads();
+          await bothDownloadsStarted;
+          return { data: { async arrayBuffer() { return bytes.buffer; } }, error: null };
+        },
+      }) } }),
+    });
+
+    const confirm = () => uploads.confirmUpload({
+      userId: 'user-1', accessToken: 'token', intentId: 'intent-double-confirm',
+    });
+    assert.deepEqual(await Promise.all([confirm(), confirm()]), [
+      { id: 'intent-double-confirm', status: 'uploaded' },
+      { id: 'intent-double-confirm', status: 'uploaded' },
+    ]);
+  } finally { await pool.end(); }
+});
+
+test('确认 CAS 失败后重读 attached 状态并幂等返回', async () => {
+  const { pool, database } = await memoryDatabase();
+  try {
+    await pool.query(`INSERT INTO user_upload_intents(
+      id,user_id,user_subject_hash,storage_key,media_kind,expected_mime_type,expected_byte_size,status,expires_at
+    ) VALUES('intent-attached-race','user-1','subject-1','user-1/intent-attached-race.png','review_photo','image/png',8,'issued',NOW()+INTERVAL '1 hour')`);
+    const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const racingDatabase = {
+      ...database,
+      async query(sql, params) {
+        if (/UPDATE user_upload_intents SET status='uploaded'/.test(sql)) {
+          await pool.query("UPDATE user_upload_intents SET status='attached' WHERE id='intent-attached-race'");
+        }
+        return database.query(sql, params);
+      },
+    };
+    const uploads = createStorageUploads({
+      database: racingDatabase,
+      getUserClient: () => ({ storage: { from: () => ({
+        async download() {
+          return { data: { async arrayBuffer() { return bytes.buffer; } }, error: null };
+        },
+      }) } }),
+    });
+
+    assert.deepEqual(await uploads.confirmUpload({
+      userId: 'user-1', accessToken: 'token', intentId: 'intent-attached-race',
+    }), { id: 'intent-attached-race', status: 'attached' });
+  } finally { await pool.end(); }
 });
 
 test('上传意图同时限制活跃任务数和 24 小时申请数', async t => {

@@ -10,6 +10,7 @@ const { importLeads, prepareLeads } = require('../src/import/discoveryLeads');
 const { importBranches, prepareBranches } = require('../src/import/branchCandidates');
 const { importDishes, prepareDishes } = require('../src/import/dishCandidates');
 const { prepareAuditPackage, importAudit } = require('../src/import/branchAudit');
+const { stripPgMemUnsupportedRls } = require('./helpers/pgMemMigrations');
 
 async function memoryClient() {
   const memory = newDb();
@@ -32,7 +33,8 @@ async function memoryClient() {
   const files = fs.readdirSync(migrationDirectory)
     .filter(name => name.endsWith('.sql') && !name.endsWith('.postgres.sql')).sort();
   for (const file of files) {
-    await pool.query(fs.readFileSync(path.join(migrationDirectory, file), 'utf8'));
+    const sql = fs.readFileSync(path.join(migrationDirectory, file), 'utf8');
+    await pool.query(stripPgMemUnsupportedRls(sql));
   }
   return { pool, client: await pool.connect() };
 }

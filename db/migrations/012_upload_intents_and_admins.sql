@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS user_upload_intents (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE app_admins ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_upload_intents ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE user_submission_media
   ADD COLUMN IF NOT EXISTS upload_intent_id TEXT REFERENCES user_upload_intents(id) ON DELETE SET NULL;
 

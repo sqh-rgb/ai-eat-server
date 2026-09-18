@@ -7,6 +7,7 @@ const { hashIdentity } = require('../src/services/identityHash');
 const { moderateReviewSubmission } = require('../src/services/reviewModeration');
 const { createReviewSubmission } = require('../src/repositories/userRepository');
 const { textArray, boundedNumber, pagination } = require('../src/routes/user');
+const { stripPgMemUnsupportedRls } = require('./helpers/pgMemMigrations');
 
 async function memoryClient() {
   const memory = newDb();
@@ -16,7 +17,10 @@ async function memoryClient() {
   const pool = new adapter.Pool();
   const directory = path.join(__dirname, '..', 'db', 'migrations');
   const files = fs.readdirSync(directory).filter(name => name.endsWith('.sql') && !name.endsWith('.postgres.sql')).sort();
-  for (const file of files) await pool.query(fs.readFileSync(path.join(directory, file), 'utf8'));
+  for (const file of files) {
+    const sql = fs.readFileSync(path.join(directory, file), 'utf8');
+    await pool.query(stripPgMemUnsupportedRls(sql));
+  }
   return { pool, client: await pool.connect() };
 }
 

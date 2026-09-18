@@ -116,9 +116,13 @@ function createStorageUploads({
     return serviceError('上传任务状态已经变化，请重新检查', 'UPLOAD_CONFIRM_CONFLICT', 409);
   }
 
+  function confirmationResult(intent) {
+    return { id: intent.id, status: intent.status };
+  }
+
   async function confirmUpload({ userId, accessToken, intentId }) {
     const intent = await ownedIntent(database, userId, intentId);
-    if (intent.status === 'uploaded' || intent.status === 'attached') return intent;
+    if (intent.status === 'uploaded' || intent.status === 'attached') return confirmationResult(intent);
     if (intent.status !== 'issued' || new Date(intent.expires_at) <= clock()) {
       await database.query(
         "UPDATE user_upload_intents SET status='expired',updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='issued' AND expires_at<=NOW()",
@@ -153,8 +157,9 @@ function createStorageUploads({
        RETURNING *`,
       [intentId, detectedMime, bytes.length, userId],
     );
-    if (result.rows[0]) return result.rows[0];
+    if (result.rows[0]) return confirmationResult(result.rows[0]);
     const current = await ownedIntent(database, userId, intentId);
+    if (current.status === 'uploaded' || current.status === 'attached') return confirmationResult(current);
     if (current.status === 'expired' || (current.status === 'issued' && new Date(current.expires_at) <= clock())) {
       await database.query(
         "UPDATE user_upload_intents SET status='expired',updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='issued' AND expires_at<=NOW()",
