@@ -1,63 +1,64 @@
-/**
- * 认证中间件 — 解析 Supabase JWT，提取 user_id
- *
- * 当前阶段：不强制要求 JWT。
- *   - 本地开发：无 Token → dev-default-user
- *   - 生产环境：无 Token → anonymous（游客模式）
- *
- * 后续接入 Supabase Auth 后，将 anonymous 替换为真实 JWT 验证。
- */
+const crypto = require('node:crypto');
+const { verifyAccessToken } = require('../services/supabaseAuth');
+const { hashIdentity } = require('../services/identityHash');
 
-function authMiddleware(req, res, next) {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // 当前阶段：允许游客访问（后续接入 Supabase 后改为 401）
+async function authMiddleware(req, res, next) {
+  const authHeader = String(req.headers.authorization || '');
+  if (!authHeader) {
+    req.user = null;
     req.userId = 'anonymous';
     return next();
   }
-
-  const token = authHeader.split(' ')[1];
-
-  // TODO: 接入 Supabase Auth 后替换为 supabase.auth.getUser(token)
-  req.userId = 'authenticated-user';
-  next();
+  const match = authHeader.match(/^Bearer\s+([^\s]+)$/i);
+  if (!match) {
+    return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Authorization 格式无效' } });
+  }
+  try {
+    req.authToken = match[1];
+    req.user = await verifyAccessToken(req.authToken);
+    req.userId = req.user.id;
+    req.userSubjectHash = hashIdentity(req.user.id, 'user');
+    return next();
+  } catch (error) {
+    return next(error);
+  }
 }
 
-/** 简单的限流计数器（60 req/min 每用户） */
-const rateMap = new Map();
-
-function rateLimiter(req, res, next) {
-  const key = req.userId || req.ip;
-  const now = Date.now();
-  const window = 60000;
-
-  if (!rateMap.has(key)) {
-    rateMap.set(key, []);
+function requireAuth(req, res, next) {
+  if (!req.user || !req.userId || req.userId === 'anonymous') {
+    return res.status(401).json({ error: { code: 'AUTH_REQUIRED', message: '请先登录' } });
   }
-
-  const timestamps = rateMap.get(key).filter(t => now - t < window);
-  timestamps.push(now);
-  rateMap.set(key, timestamps);
-
-  if (timestamps.length > 60) {
-    return res.status(429).json({ error: { code: 'RATE_LIMITED', message: '请求太频繁，请稍后再试' } });
-  }
-
-  next();
+  return next();
 }
 
-// 定期清理过期计时器（避免内存泄漏）
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, timestamps] of rateMap) {
-    const fresh = timestamps.filter(t => now - t < 60000);
-    if (fresh.length === 0) {
-      rateMap.delete(key);
-    } else {
-      rateMap.set(key, fresh);
+function createMemoryLimiter({ limit, windowMs, prefix }) {
+  const store = new Map();
+  const middleware = (req, res, next) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const principal = req.userId && req.userId !== 'anonymous' ? req.userId : req.ip;
+    const identity = `${principal}:${email}`;
+    const key = `${prefix}:${crypto.createHash('sha256').update(identity).digest('hex')}`;
+    const now = Date.now();
+    const timestamps = (store.get(key) || []).filter(value => now - value < windowMs);
+    if (timestamps.length >= limit) {
+      return res.status(429).json({ error: { code: 'RATE_LIMITED', message: '请求过于频繁，请稍后再试' } });
     }
-  }
-}, 120000); // 每 2 分钟清理
+    timestamps.push(now);
+    store.set(key, timestamps);
+    return next();
+  };
+  const timer = setInterval(() => {
+    const cutoff = Date.now() - windowMs;
+    for (const [key, timestamps] of store) {
+      const fresh = timestamps.filter(value => value >= cutoff);
+      if (fresh.length) store.set(key, fresh); else store.delete(key);
+    }
+  }, Math.min(windowMs, 120000));
+  timer.unref?.();
+  return middleware;
+}
 
-module.exports = { authMiddleware, rateLimiter };
+const rateLimiter = createMemoryLimiter({ limit: 60, windowMs: 60000, prefix: 'api' });
+const authRateLimiter = createMemoryLimiter({ limit: 10, windowMs: 15 * 60000, prefix: 'auth' });
+
+module.exports = { authMiddleware, requireAuth, rateLimiter, authRateLimiter, createMemoryLimiter };

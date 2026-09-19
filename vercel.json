@@ -11,5 +11,11 @@
       "src": "/(.*)",
       "dest": "src/index.js"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/internal/ratings/aggregate",
+      "schedule": "0 0 1,16 * *"
+    }
   ]
 }
