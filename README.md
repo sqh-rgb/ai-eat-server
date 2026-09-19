@@ -128,6 +128,8 @@ npm run reviews:rollback -- --batch qq-xxxxxxxxxxxxxxxxxxxxxxxx
 ## 邮箱登录 API
 
 - `POST /api/v1/auth/signup`：邮箱和密码注册；密码要求 8～72 个字符。
+- `POST /api/v1/auth/confirm-email`：提交邮箱与邮件中的 6 位验证码完成确认，成功后返回登录会话。
+- `POST /api/v1/auth/resend-confirmation`：请求重新发送确认验证码；响应不会透露邮箱是否存在或是否已确认。
 - `POST /api/v1/auth/login`：邮箱密码登录，返回 access token 与 refresh token。
 - `POST /api/v1/auth/refresh`：使用 refresh token 换取新会话。
 - `GET /api/v1/auth/me`：使用 `Authorization: Bearer <accessToken>` 获取当前用户。
@@ -137,7 +139,7 @@ npm run reviews:rollback -- --batch qq-xxxxxxxxxxxxxxxxxxxxxxxx
 
 服务端不会自行相信 JWT 内容；带 Token 的请求会调用 Supabase `getUser` 验证后再设置用户身份。
 所有认证响应均使用 `Cache-Control: no-store`。登录接口有独立限流，Supabase 项目自身的认证限流继续作为外层保护。
-正式启用前，必须在 Supabase Authentication 的 URL Configuration 中登记网页回调地址。
+确认注册邮件模板必须使用 Supabase 的 `{{ .Token }}`，而不是 `{{ .ConfirmationURL }}`；这样 QQ、163 等邮箱用户可在 AI Eat 页面输入验证码，无需访问 Supabase 域名。密码重置仍需要在 Supabase Authentication 的 URL Configuration 中登记网页回调地址。
 
 ## 半月用户评分
 

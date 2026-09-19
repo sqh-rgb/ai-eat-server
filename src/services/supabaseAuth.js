@@ -93,7 +93,7 @@ function normalizeAuthError(source, defaultMessage = '认证请求失败') {
   } else if (message.includes('email not confirmed')) {
     error.code = 'EMAIL_NOT_CONFIRMED';
     error.status = 403;
-    error.message = '邮箱尚未验证，请先打开验证邮件';
+    error.message = '邮箱尚未验证，请输入邮件中的验证码';
   } else if (message.includes('invalid login credentials')) {
     error.code = 'INVALID_CREDENTIALS';
     error.status = 401;
@@ -111,6 +111,19 @@ async function signUpWithEmail({ email, password }) {
   const { data, error } = await getAuthClient().auth.signUp({ email, password, options });
   if (error) throw normalizeAuthError(error, '邮箱注册失败');
   return { user: safeUser(data.user), session: safeSession(data.session) };
+}
+
+async function confirmEmailOtp({ email, code }) {
+  const { data, error } = await getAuthClient().auth.verifyOtp({
+    email, token: code, type: 'email',
+  });
+  if (error) throw normalizeAuthError(error, '验证码无效或已过期');
+  return { user: safeUser(data.user), session: safeSession(data.session) };
+}
+
+async function resendSignupConfirmation(email) {
+  const { error } = await getAuthClient().auth.resend({ type: 'signup', email });
+  if (error) throw normalizeAuthError(error, '验证码发送失败');
 }
 
 async function signInWithEmail({ email, password }) {
@@ -176,6 +189,6 @@ async function updatePassword(accessToken, password) {
 
 module.exports = {
   authConfigured, getAuthClient, getUserAuthClient, getServiceAuthClient, safeUser, normalizeAuthError,
-  signUpWithEmail, signInWithEmail, refreshEmailSession,
+  signUpWithEmail, confirmEmailOtp, resendSignupConfirmation, signInWithEmail, refreshEmailSession,
   requestPasswordReset, verifyAccessToken, signOutAccessToken, updatePassword,
 };

@@ -1,7 +1,7 @@
 const { Router } = require('express');
 const {
   safeUser, signUpWithEmail, signInWithEmail, refreshEmailSession,
-  requestPasswordReset, signOutAccessToken, updatePassword,
+  confirmEmailOtp, resendSignupConfirmation, requestPasswordReset, signOutAccessToken, updatePassword,
 } = require('../services/supabaseAuth');
 const { requireAuth, authRateLimiter } = require('../middleware/auth');
 
@@ -34,6 +34,12 @@ function passwordValue(value) {
   return password;
 }
 
+function confirmationCodeValue(value) {
+  const code = String(value || '').trim();
+  if (!/^\d{6}$/.test(code)) throw validationError('请输入 6 位数字验证码');
+  return code;
+}
+
 router.post('/signup', authRateLimiter, async (req, res, next) => {
   try {
     const result = await signUpWithEmail({
@@ -45,6 +51,21 @@ router.post('/signup', authRateLimiter, async (req, res, next) => {
       confirmationRequired: !result.session,
       message: result.session ? '注册并登录成功' : '注册成功，请前往邮箱完成验证',
     });
+  } catch (error) { return next(error); }
+});
+
+router.post('/confirm-email', authRateLimiter, async (req, res, next) => {
+  try {
+    return res.json(await confirmEmailOtp({
+      email: emailValue(req.body?.email), code: confirmationCodeValue(req.body?.code),
+    }));
+  } catch (error) { return next(error); }
+});
+
+router.post('/resend-confirmation', authRateLimiter, async (req, res, next) => {
+  try {
+    await resendSignupConfirmation(emailValue(req.body?.email));
+    return res.status(202).json({ message: '如果该邮箱已注册且尚未验证，将收到验证码' });
   } catch (error) { return next(error); }
 });
 
@@ -88,4 +109,4 @@ router.post('/password', requireAuth, authRateLimiter, async (req, res, next) =>
   } catch (error) { return next(error); }
 });
 
-module.exports = { router, emailValue, passwordValue };
+module.exports = { router, emailValue, passwordValue, confirmationCodeValue };

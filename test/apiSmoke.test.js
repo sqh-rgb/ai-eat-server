@@ -87,6 +87,17 @@ test('邮箱认证参数先本地校验且未登录不能读取当前用户', as
   });
 });
 
+test('邮箱确认接口会在访问认证服务前拒绝格式错误的验证码', async () => {
+  await withServer(async base => {
+    const response = await fetch(`${base}/api/v1/auth/confirm-email`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'student@example.com', code: 'wrong' }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'VALIDATION_ERROR');
+  });
+});
+
 test('配置缺失时认证接口明确返回 503 而不是伪登录', async () => {
   await withServer(async base => {
     const response = await fetch(`${base}/api/v1/auth/login`, {

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { emailValue, passwordValue } = require('../src/routes/auth');
+const { emailValue, passwordValue, confirmationCodeValue } = require('../src/routes/auth');
 const { safeUser, normalizeAuthError } = require('../src/services/supabaseAuth');
 
 test('邮箱登录参数会规范化邮箱但不会改写密码', () => {
@@ -12,6 +12,12 @@ test('拒绝无效邮箱、短密码和控制字符', () => {
   assert.throws(() => emailValue('not-an-email'), /有效的邮箱/);
   assert.throws(() => passwordValue('short'), /8～72/);
   assert.throws(() => passwordValue('abcdefgh\n'), /控制字符/);
+});
+
+test('邮箱确认只接受六位数字验证码', () => {
+  assert.equal(confirmationCodeValue(' 123456 '), '123456');
+  assert.throws(() => confirmationCodeValue('12345'), /6 位/);
+  assert.throws(() => confirmationCodeValue('12345a'), /6 位/);
 });
 
 test('公开用户对象不泄露 Supabase 内部元数据', () => {
